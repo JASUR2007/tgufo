@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "GlobTool",
+      "GrepTool",
+      "EditTool",
+      "WriteTool"
+    ]
+  },
+  "preferredModel": "claude-3-7-sonnet"
+}

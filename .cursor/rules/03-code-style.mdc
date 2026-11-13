@@ -1,0 +1,10 @@
+---
+description: Code Quality, Testing, and Frontend Guidelines
+globs: **/*
+---
+# Code Style & Frontend Guidelines
+
+- Python: Strict type annotations (mypy compatible), Pydantic v2 schemas for all request/response models.
+- FastAPI: Use standard status codes (`200`, `201`, `204`, `400`, `401`, `403`, `404`, `422`).
+- Video Streaming: Must support HTTP 206 Partial Content and `Range` headers for HTML5 seek/scrubbing.
+- Frontend: Responsive YouTube-like layout, modern dark mode with `#0f0f0f` background and `#ff0000` accents. Include a Quick Demo Switcher bar for instant examiner testing.

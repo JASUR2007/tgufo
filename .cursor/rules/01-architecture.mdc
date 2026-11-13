@@ -1,0 +1,11 @@
+---
+description: System Architecture and Domain Design Standards
+globs: backend/**/*.py, frontend/**/*.tsx
+---
+# Architecture Standards
+
+- Decouple API routing, business services, and database persistence.
+- Models must reside in `backend/app/models/` and inherit from declarative `Base`.
+- Always use async database sessions via SQLAlchemy 2.0.
+- All media assets must be stored in object storage (MinIO/S3), never as raw binaries in PostgreSQL.
+- Background media processing runs asynchronously via worker or BackgroundTasks with ffmpeg.

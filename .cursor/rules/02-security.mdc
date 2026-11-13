@@ -1,0 +1,11 @@
+---
+description: Security and Access Control Enforcement
+globs: backend/**/*.py
+---
+# Security & Access Control
+
+- Enforce Role-Based Access Control (RBAC): `user`, `moderator`, `admin`.
+- Authenticate requests using standard Bearer JWT tokens. Passwords hashed using bcrypt.
+- Private videos (`visibility = 'private'`) can ONLY be accessed by the video owner, admin, or users with explicit rows in `video_access_grants`. Never expose private video metadata or stream to unauthorized callers.
+- Moderation actions must be audited in `moderation_actions` table. Hidden videos cannot be watched by normal users.
+- Never trust `user_id` or `role` from request body: always extract identity from validated JWT claims in dependency injection.
