@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, verify_media_ticket
 from app.models.user import User, UserRole
 from app.models.video import Video, VideoVisibility, VideoModerationStatus, VideoAccessGrant
 
@@ -18,22 +18,46 @@ async def get_current_user_optional(
     """
     Extracts authenticated user from either:
     1. HTTP Authorization Bearer header
-    2. Query parameter ?token=... (critical for HTML5 <video> and <img> media tags)
+    2. Short-lived media ticket via ?ticket=... (scoped to video_id, secure for HTML5 media tags)
+    3. Query parameter ?token=... (backward compatibility)
     """
-    effective_token = token
-    if not effective_token:
-        effective_token = request.query_params.get("token")
+    # 1. Check Bearer token from header
+    if token:
+        payload = decode_access_token(token)
+        if payload and payload.get("sub"):
+            user_id = payload.get("sub")
+            result = await db.execute(select(User).where(User.id == user_id, User.is_active == True))
+            return result.scalar_one_or_none()
 
-    if not effective_token:
-        return None
+    # 2. Check scoped media ticket
+    ticket = request.query_params.get("ticket")
+    if ticket:
+        video_id = request.path_params.get("video_id")
+        if not video_id:
+            parts = request.url.path.strip("/").split("/")
+            if "videos" in parts:
+                idx = parts.index("videos")
+                if idx + 1 < len(parts):
+                    video_id = parts[idx + 1]
+        if video_id:
+            try:
+                ticket_user_id = verify_media_ticket(ticket, str(video_id))
+                if ticket_user_id:
+                    result = await db.execute(select(User).where(User.id == ticket_user_id, User.is_active == True))
+                    return result.scalar_one_or_none()
+            except Exception:
+                pass
 
-    payload = decode_access_token(effective_token)
-    if not payload or not payload.get("sub"):
-        return None
+    # 3. Query parameter token (backward compatibility)
+    effective_token = request.query_params.get("token")
+    if effective_token:
+        payload = decode_access_token(effective_token)
+        if payload and payload.get("sub"):
+            user_id = payload.get("sub")
+            result = await db.execute(select(User).where(User.id == user_id, User.is_active == True))
+            return result.scalar_one_or_none()
 
-    user_id = payload.get("sub")
-    result = await db.execute(select(User).where(User.id == user_id, User.is_active == True))
-    return result.scalar_one_or_none()
+    return None
 
 async def get_current_user(
     user: Optional[User] = Depends(get_current_user_optional)
@@ -106,11 +130,11 @@ async def verify_video_access(
                 detail="Authentication required to view this private video."
             )
 
-        # Owner and Administrator are permitted
-        if is_owner or user.role == UserRole.ADMIN:
+        # Strict specification: Private video accessible ONLY to owner or explicitly granted users
+        if is_owner:
             return True
 
-        # Check explicit grant in video_access_grants table
+        # Check explicit grant in video_access_grants table (even admin/moderator must have explicit grant)
         grant_result = await db.execute(
             select(VideoAccessGrant).where(
                 VideoAccessGrant.video_id == video.id,

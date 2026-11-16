@@ -9,11 +9,9 @@ interface VideoCardProps {
 }
 
 export const VideoCard: React.FC<VideoCardProps> = ({ video }) => {
-  const { user, token } = useAuth();
+  const { user } = useAuth();
 
-  const authenticatedThumbUrl = video.thumbnail_url
-    ? (user && token ? `${video.thumbnail_url}?token=${encodeURIComponent(token)}` : video.thumbnail_url)
-    : null;
+  const authenticatedThumbUrl = video.thumbnail_url;
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);

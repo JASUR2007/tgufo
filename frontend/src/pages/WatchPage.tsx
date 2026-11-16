@@ -27,6 +27,7 @@ export const WatchPage: React.FC = () => {
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [mediaTicket, setMediaTicket] = useState<string>('');
 
   // Manage Grants modal state
   const [showGrants, setShowGrants] = useState(false);
@@ -46,6 +47,12 @@ export const WatchPage: React.FC = () => {
       if (data.channel) {
         setIsSubscribed(!!data.channel.is_subscribed);
         setSubscribersCount(data.channel.subscribers_count);
+      }
+
+      if (user) {
+        apiService.getMediaTicket(videoId).then((t) => {
+          if (t) setMediaTicket(t);
+        });
       }
 
       // Load recommended videos
@@ -170,17 +177,17 @@ export const WatchPage: React.FC = () => {
     <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col lg:flex-row gap-6">
       {/* Left/Main Column: Video & Metadata */}
       <div className="flex-1 max-w-[1280px]">
-        {/* Player with token-authenticated media streaming */}
+        {/* Player with scoped media-ticket authenticated streaming */}
         <VideoPlayer
           src={
-            user && token
-              ? `${video.video_url}?token=${encodeURIComponent(token)}`
+            mediaTicket
+              ? `${video.video_url}?ticket=${encodeURIComponent(mediaTicket)}`
               : video.video_url
           }
           poster={
             video.thumbnail_url
-              ? user && token
-                ? `${video.thumbnail_url}?token=${encodeURIComponent(token)}`
+              ? mediaTicket
+                ? `${video.thumbnail_url}?ticket=${encodeURIComponent(mediaTicket)}`
                 : video.thumbnail_url
               : undefined
           }

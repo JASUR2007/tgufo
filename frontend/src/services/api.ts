@@ -54,6 +54,14 @@ export const apiService = {
   async deleteVideo(id: string) {
     await api.delete(`/videos/${id}`);
   },
+  async getMediaTicket(videoId: string | number): Promise<string> {
+    try {
+      const res = await api.post(`/videos/${videoId}/ticket`);
+      return res.data.ticket || '';
+    } catch {
+      return '';
+    }
+  },
 
   // Private Video Grants
   async getGrants(videoId: string): Promise<VideoAccessGrant[]> {

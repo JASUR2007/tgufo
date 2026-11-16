@@ -37,6 +37,12 @@ app.add_middleware(
 # Mount API routes
 app.include_router(api_v1_router, prefix=settings.API_V1_STR)
 
+@app.get("/openapi.json", include_in_schema=False)
+async def get_root_openapi_endpoint():
+    """Alias for /api/v1/openapi.json so root openapi requests also resolve seamlessly."""
+    from fastapi.openapi.utils import get_openapi
+    return get_openapi(title=app.title, version=app.version, routes=app.routes)
+
 @app.get("/health", tags=["Health"])
 async def health_check():
     return {

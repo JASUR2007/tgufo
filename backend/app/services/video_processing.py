@@ -42,6 +42,7 @@ class VideoProcessingService:
         target_path = storage_service.thumbnails_dir / thumbnail_filename
         
         # Method 1: Try ffmpeg if available
+        generated = False
         if self.ffmpeg_path and video_path.exists():
             try:
                 cmd = [
@@ -61,30 +62,39 @@ class VideoProcessingService:
                 )
                 await proc.communicate()
                 if target_path.exists() and target_path.stat().st_size > 0:
-                    return thumbnail_filename
+                    generated = True
             except Exception as e:
                 print(f"[VideoProcessing] ffmpeg thumbnail failed: {e}")
 
         # Method 2: Graceful fallback with Pillow (crisp 1280x720 graphic thumbnail)
-        try:
-            img = Image.new("RGB", (1280, 720), color=(24, 24, 27)) # dark zinc
-            draw = ImageDraw.Draw(img)
+        if not generated:
+            try:
+                img = Image.new("RGB", (1280, 720), color=(24, 24, 27)) # dark zinc
+                draw = ImageDraw.Draw(img)
 
-            # Draw a YouTube-like red badge / play button
-            # Play button background
-            draw.rounded_rectangle([560, 280, 720, 440], radius=32, fill=(255, 0, 0))
-            # Play triangle in white
-            draw.polygon([(620, 320), (620, 400), (680, 360)], fill=(255, 255, 255))
+                # Draw a YouTube-like red badge / play button
+                draw.rounded_rectangle([560, 280, 720, 440], radius=32, fill=(255, 0, 0))
+                draw.polygon([(620, 320), (620, 400), (680, 360)], fill=(255, 255, 255))
 
-            # Draw title bar at bottom
-            draw.rectangle([0, 620, 1280, 720], fill=(15, 15, 15))
-            draw.text((40, 650), title[:60], fill=(240, 240, 240))
+                # Draw title bar at bottom
+                draw.rectangle([0, 620, 1280, 720], fill=(15, 15, 15))
+                draw.text((40, 650), title[:60], fill=(240, 240, 240))
 
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            img.save(str(target_path), "JPEG", quality=85)
-            return thumbnail_filename
-        except Exception as e:
-            print(f"[VideoProcessing] Pillow thumbnail fallback failed: {e}")
-            return thumbnail_filename
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                img.save(str(target_path), "JPEG", quality=85)
+                generated = True
+            except Exception as e:
+                print(f"[VideoProcessing] Pillow thumbnail fallback failed: {e}")
+
+        # Persist generated thumbnail to MinIO/S3 object storage
+        if target_path.exists() and target_path.stat().st_size > 0:
+            try:
+                with open(target_path, "rb") as f:
+                    thumb_bytes = f.read()
+                await storage_service.save_file(thumb_bytes, "thumbnails", thumbnail_filename)
+            except Exception as e:
+                print(f"[VideoProcessing] Failed to upload thumbnail to S3: {e}")
+
+        return thumbnail_filename
 
 video_processing_service = VideoProcessingService()

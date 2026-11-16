@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.security import create_media_ticket
 from app.core.storage import storage_service
 from app.services.video_processing import video_processing_service
 from app.models.user import User, UserRole
@@ -307,6 +308,33 @@ async def delete_video(
     await db.commit()
     return None
 
+@router.post("/{video_id}/ticket")
+async def generate_media_ticket_endpoint(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Generate a short-lived (15 min) media ticket scoped strictly to this video.
+    Allows HTML5 <video> and <img> to authenticate securely without exposing account access tokens in URLs.
+    """
+    result = await db.execute(
+        select(Video).options(selectinload(Video.channel)).where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Verify that this user is authorized to view this video
+    await verify_video_access(video, current_user, db)
+
+    ticket = create_media_ticket(user_id=current_user.id, video_id=str(video_id), expires_minutes=15)
+    return {
+        "ticket": ticket,
+        "video_id": str(video_id),
+        "expires_in_seconds": 900
+    }
+
 @router.get("/{video_id}/stream")
 async def stream_video(
     video_id: str,
@@ -324,12 +352,18 @@ async def stream_video(
     # Strict Access control verification (owner, granted users, or public)
     await verify_video_access(video, current_user, db)
 
+    is_public = bool(
+        video.visibility == VideoVisibility.PUBLIC and
+        video.moderation_status == VideoModerationStatus.APPROVED
+    )
+
     range_header = request.headers.get("range")
     return storage_service.create_range_streaming_response(
         folder="videos",
         filename=video.video_filename,
         range_header=range_header,
-        media_type="video/mp4"
+        media_type="video/mp4",
+        is_public=is_public
     )
 
 @router.get("/{video_id}/thumbnail")
@@ -348,7 +382,12 @@ async def get_thumbnail(
     # Strict Access control check: private/hidden thumbnails require authorization
     await verify_video_access(video, current_user, db)
 
-    return storage_service.get_thumbnail_response(video.thumbnail_filename)
+    is_public = bool(
+        video.visibility == VideoVisibility.PUBLIC and
+        video.moderation_status == VideoModerationStatus.APPROVED
+    )
+
+    return storage_service.get_thumbnail_response(video.thumbnail_filename, is_public=is_public)
 
 # Private Video Grants Endpoints
 @router.get("/{video_id}/grants", response_model=List[VideoAccessGrantRead])

@@ -20,6 +20,7 @@ TestSessionLocal = async_sessionmaker(bind=test_engine, class_=AsyncSession, exp
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def prepare_test_db():
+    settings.STORAGE_TYPE = "local"
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)

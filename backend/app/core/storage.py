@@ -46,7 +46,12 @@ class StorageService:
         s3_key = f"{folder}/{filename}"
 
         # 1. Primary write to S3/MinIO if enabled
-        if self.s3_client:
+        if settings.STORAGE_TYPE == "minio":
+            if not self.s3_client:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Object storage is configured (minio) but S3 client is unavailable."
+                )
             try:
                 self.s3_client.put_object(
                     Bucket=settings.S3_BUCKET_NAME,
@@ -54,7 +59,19 @@ class StorageService:
                     Body=content
                 )
             except Exception as e:
-                print(f"[StorageService] S3 put_object failed ({e}). Saving locally.")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to persist file in S3 object storage: {e}"
+                )
+        elif self.s3_client:
+            try:
+                self.s3_client.put_object(
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Body=content
+                )
+            except Exception as e:
+                print(f"[StorageService] Optional S3 put_object warning: {e}")
 
         # 2. Local copy for fast worker ffmpeg processing
         target_dir = self.storage_dir / folder
@@ -85,7 +102,8 @@ class StorageService:
         folder: str,
         filename: str,
         range_header: Optional[str],
-        media_type: str = "video/mp4"
+        media_type: str = "video/mp4",
+        is_public: bool = True
     ) -> StreamingResponse:
         """
         RFC 7233 Range-compatible streaming response.
@@ -93,6 +111,7 @@ class StorageService:
         """
         s3_key = f"{folder}/{filename}"
         file_size = self.get_object_size(folder, filename)
+        cache_header = "public, max-age=86400" if is_public else "private, no-cache, no-store, must-revalidate, max-age=0"
 
         if not range_header:
             # Full content (200 OK)
@@ -107,9 +126,12 @@ class StorageService:
                         "Content-Length": str(file_size),
                         "Accept-Ranges": "bytes",
                         "Content-Type": media_type,
+                        "Cache-Control": cache_header
                     }
                     return StreamingResponse(s3_full_iterator(), status_code=200, headers=headers)
                 except Exception as e:
+                    if settings.STORAGE_TYPE == "minio":
+                        raise HTTPException(status_code=500, detail=f"S3 object stream failed: {e}")
                     print(f"[StorageService] S3 stream failed ({e}), trying local disk.")
 
             # Local disk full content
@@ -122,6 +144,7 @@ class StorageService:
                 "Content-Length": str(file_size),
                 "Accept-Ranges": "bytes",
                 "Content-Type": media_type,
+                "Cache-Control": cache_header
             }
             return StreamingResponse(local_full_iterator(), status_code=200, headers=headers)
 
@@ -161,9 +184,12 @@ class StorageService:
                     "Accept-Ranges": "bytes",
                     "Content-Length": str(content_length),
                     "Content-Type": media_type,
+                    "Cache-Control": cache_header
                 }
                 return StreamingResponse(s3_partial_iterator(), status_code=206, headers=headers)
             except Exception as e:
+                if settings.STORAGE_TYPE == "minio":
+                    raise HTTPException(status_code=500, detail=f"S3 Range stream failed: {e}")
                 print(f"[StorageService] S3 Range request failed ({e}), trying local disk.")
 
         # Local disk partial content iterator
@@ -185,11 +211,14 @@ class StorageService:
             "Accept-Ranges": "bytes",
             "Content-Length": str(content_length),
             "Content-Type": media_type,
+            "Cache-Control": cache_header
         }
         return StreamingResponse(local_partial_iterator(), status_code=206, headers=headers)
 
-    def get_thumbnail_response(self, filename: str) -> StreamingResponse:
+    def get_thumbnail_response(self, filename: str, is_public: bool = True) -> StreamingResponse:
         s3_key = f"thumbnails/{filename}"
+        cache_header = "public, max-age=86400" if is_public else "private, no-cache, no-store, must-revalidate, max-age=0"
+
         if self.s3_client:
             try:
                 s3_resp = self.s3_client.get_object(Bucket=settings.S3_BUCKET_NAME, Key=s3_key)
@@ -199,7 +228,7 @@ class StorageService:
                         yield chunk
                 headers = {
                     "Content-Type": "image/jpeg",
-                    "Cache-Control": "public, max-age=86400"
+                    "Cache-Control": cache_header
                 }
                 return StreamingResponse(s3_thumb_iterator(), media_type="image/jpeg", headers=headers)
             except Exception:
@@ -208,7 +237,8 @@ class StorageService:
         # Local fallback
         local_path = self.storage_dir / "thumbnails" / filename
         if local_path.exists():
-            return FileResponse(local_path, media_type="image/jpeg")
+            headers = {"Cache-Control": cache_header}
+            return FileResponse(local_path, media_type="image/jpeg", headers=headers)
         raise HTTPException(status_code=404, detail="Thumbnail not found")
 
 storage_service = StorageService()

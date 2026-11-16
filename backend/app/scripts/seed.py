@@ -214,7 +214,7 @@ async def seed_demo_data():
             },
             {
                 "title": "[PRIVATE] Confidential Strategy & Revenue Projections 2026",
-                "description": "Strictly confidential! Accessible only to owner, admin, and granted viewer.",
+                "description": "Strictly confidential! Accessible only to owner and granted viewers.",
                 "creator": "tech_guru",
                 "filename": "private_strategy.mp4",
                 "thumb": "thumb_private.jpg",
