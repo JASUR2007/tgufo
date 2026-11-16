@@ -198,3 +198,116 @@ async def test_hidden_moderated_video(client: AsyncClient, test_users: dict):
         headers={"Authorization": f"Bearer {tokens['moderator']}"}
     )
     assert res_mod.status_code == 200
+
+@pytest.mark.asyncio
+async def test_private_video_comments_and_reactions_acl(client: AsyncClient, test_users: dict):
+    """
+    Ensure private video strictly protects comments and reactions:
+    - Anonymous: 401 Unauthorized (no comments revealed, cannot post)
+    - Stranger: 403 Forbidden (no comments revealed, cannot post, cannot react)
+    - Admin (without explicit grant): 403 Forbidden (strictly owner + granted)
+    - Owner: 201 Created (post comment), 200 OK (view comments, react)
+    - Granted viewer: 201 Created (post comment), 200 OK (view comments, react)
+    """
+    video = test_users["private_video"]
+    tokens = test_users["tokens"]
+
+    # 1. Owner posts comment -> 201 Created
+    res_owner_comment = await client.post(
+        f"/api/v1/videos/{video.id}/comments",
+        headers={"Authorization": f"Bearer {tokens['creator']}"},
+        json={"content": "Owner confidential note"}
+    )
+    assert res_owner_comment.status_code == 201
+    assert res_owner_comment.json()["content"] == "Owner confidential note"
+
+    # 2. Anonymous attempts to view comments -> 401 Unauthorized (comments NOT revealed)
+    res_anon_comments = await client.get(f"/api/v1/videos/{video.id}/comments")
+    assert res_anon_comments.status_code == 401
+
+    # 3. Anonymous attempts to post comment -> 401 Unauthorized
+    res_anon_post = await client.post(
+        f"/api/v1/videos/{video.id}/comments",
+        json={"content": "Anonymous intrusion attempt"}
+    )
+    assert res_anon_post.status_code == 401
+
+    # 4. Stranger attempts to view comments -> 403 Forbidden (comments NOT revealed)
+    res_stranger_comments = await client.get(
+        f"/api/v1/videos/{video.id}/comments",
+        headers={"Authorization": f"Bearer {tokens['stranger']}"}
+    )
+    assert res_stranger_comments.status_code == 403
+
+    # 5. Stranger attempts to post comment -> 403 Forbidden (no comment created)
+    res_stranger_post = await client.post(
+        f"/api/v1/videos/{video.id}/comments",
+        headers={"Authorization": f"Bearer {tokens['stranger']}"},
+        json={"content": "Stranger comment attempt"}
+    )
+    assert res_stranger_post.status_code == 403
+
+    # 6. Stranger attempts to toggle reaction -> 403 Forbidden (no reaction recorded)
+    res_stranger_react = await client.post(
+        f"/api/v1/videos/{video.id}/reactions",
+        headers={"Authorization": f"Bearer {tokens['stranger']}"},
+        json={"reaction_type": "like"}
+    )
+    assert res_stranger_react.status_code == 403
+
+    # 7. Stranger attempts to check reaction state -> 403 Forbidden
+    res_stranger_react_me = await client.get(
+        f"/api/v1/videos/{video.id}/reactions/me",
+        headers={"Authorization": f"Bearer {tokens['stranger']}"}
+    )
+    assert res_stranger_react_me.status_code == 403
+
+    # 8. Admin (without explicit grant) attempts to view/post comment -> 403 Forbidden
+    res_admin_comments = await client.get(
+        f"/api/v1/videos/{video.id}/comments",
+        headers={"Authorization": f"Bearer {tokens['admin']}"}
+    )
+    assert res_admin_comments.status_code == 403
+
+    res_admin_post = await client.post(
+        f"/api/v1/videos/{video.id}/comments",
+        headers={"Authorization": f"Bearer {tokens['admin']}"},
+        json={"content": "Admin bypass attempt"}
+    )
+    assert res_admin_post.status_code == 403
+
+    # 9. Granted viewer posts comment -> 201 Created
+    res_viewer_post = await client.post(
+        f"/api/v1/videos/{video.id}/comments",
+        headers={"Authorization": f"Bearer {tokens['viewer']}"},
+        json={"content": "Granted viewer allowed comment"}
+    )
+    assert res_viewer_post.status_code == 201
+
+    # 10. Granted viewer lists comments -> 200 OK (sees comments)
+    res_viewer_comments = await client.get(
+        f"/api/v1/videos/{video.id}/comments",
+        headers={"Authorization": f"Bearer {tokens['viewer']}"}
+    )
+    assert res_viewer_comments.status_code == 200
+    comments_list = res_viewer_comments.json()
+    assert len(comments_list) == 2
+
+    # 11. Granted viewer toggles reaction -> 200 OK
+    res_viewer_react = await client.post(
+        f"/api/v1/videos/{video.id}/reactions",
+        headers={"Authorization": f"Bearer {tokens['viewer']}"},
+        json={"reaction_type": "like"}
+    )
+    assert res_viewer_react.status_code == 200
+    assert res_viewer_react.json()["likes_count"] == 1
+
+    # 12. Owner toggles reaction -> 200 OK
+    res_owner_react = await client.post(
+        f"/api/v1/videos/{video.id}/reactions",
+        headers={"Authorization": f"Bearer {tokens['creator']}"},
+        json={"reaction_type": "like"}
+    )
+    assert res_owner_react.status_code == 200
+    assert res_owner_react.json()["likes_count"] == 2
+

@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -10,7 +10,7 @@ from app.models.video import Video
 from app.models.comment import Comment
 from app.schemas.comment import CommentCreate, CommentRead
 from app.schemas.user import UserRead
-from app.api.deps import get_current_user, get_current_user_optional
+from app.api.deps import get_current_user, get_current_user_optional, verify_video_access
 
 router = APIRouter(tags=["Comments"])
 
@@ -18,8 +18,18 @@ router = APIRouter(tags=["Comments"])
 async def list_comments(
     video_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_optional)
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
+    video_res = await db.execute(
+        select(Video).options(selectinload(Video.channel)).where(Video.id == video_id)
+    )
+    video = video_res.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Strict access verification: private/hidden videos require proper authorization
+    await verify_video_access(video, current_user, db)
+
     stmt = (
         select(Comment)
         .options(selectinload(Comment.user))
@@ -29,11 +39,16 @@ async def list_comments(
     result = await db.execute(stmt)
     comments = result.scalars().all()
 
+    video_owner_id = video.channel.user_id if video.channel else None
     response = []
     for c in comments:
         can_delete = False
         if current_user:
-            can_delete = (c.user_id == current_user.id or current_user.role in (UserRole.MODERATOR, UserRole.ADMIN))
+            can_delete = (
+                c.user_id == current_user.id
+                or (video_owner_id is not None and current_user.id == video_owner_id)
+                or current_user.role in (UserRole.MODERATOR, UserRole.ADMIN)
+            )
         
         response.append(CommentRead(
             id=c.id,
@@ -53,9 +68,15 @@ async def create_comment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    video_res = await db.execute(select(Video).where(Video.id == video_id))
-    if not video_res.scalar_one_or_none():
+    video_res = await db.execute(
+        select(Video).options(selectinload(Video.channel)).where(Video.id == video_id)
+    )
+    video = video_res.scalar_one_or_none()
+    if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    # Strict access verification: unauthorized users cannot comment on private/hidden videos
+    await verify_video_access(video, current_user, db)
 
     comment = Comment(
         video_id=video_id,
@@ -82,12 +103,21 @@ async def delete_comment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Comment).where(Comment.id == comment_id))
+    result = await db.execute(
+        select(Comment)
+        .options(selectinload(Comment.video).selectinload(Video.channel))
+        .where(Comment.id == comment_id)
+    )
     comment = result.scalar_one_or_none()
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    can_delete = (comment.user_id == current_user.id or current_user.role in (UserRole.MODERATOR, UserRole.ADMIN))
+    is_video_owner = bool(comment.video and comment.video.channel and comment.video.channel.user_id == current_user.id)
+    can_delete = (
+        comment.user_id == current_user.id
+        or is_video_owner
+        or current_user.role in (UserRole.MODERATOR, UserRole.ADMIN)
+    )
     if not can_delete:
         raise HTTPException(status_code=403, detail="Not authorized to delete this comment")
 

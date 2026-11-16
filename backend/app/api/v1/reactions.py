@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
 from app.core.database import get_db
 from app.models.user import User
 from app.models.video import Video
 from app.models.reaction import VideoReaction, ReactionType
 from app.schemas.reaction import ReactionCreate, ReactionStatus
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, verify_video_access
 
 router = APIRouter(prefix="/videos/{video_id}/reactions", tags=["Reactions"])
 
@@ -17,10 +19,15 @@ async def toggle_reaction(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    video_res = await db.execute(select(Video).where(Video.id == video_id))
+    video_res = await db.execute(
+        select(Video).options(selectinload(Video.channel)).where(Video.id == video_id)
+    )
     video = video_res.scalar_one_or_none()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    # Strict access verification: private/hidden videos require proper authorization
+    await verify_video_access(video, current_user, db)
 
     reaction_res = await db.execute(
         select(VideoReaction).where(
@@ -79,10 +86,15 @@ async def get_my_reaction(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    video_res = await db.execute(select(Video).where(Video.id == video_id))
+    video_res = await db.execute(
+        select(Video).options(selectinload(Video.channel)).where(Video.id == video_id)
+    )
     video = video_res.scalar_one_or_none()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    # Strict access verification: private/hidden videos require proper authorization
+    await verify_video_access(video, current_user, db)
 
     reaction_res = await db.execute(
         select(VideoReaction).where(

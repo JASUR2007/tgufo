@@ -13,7 +13,7 @@ from app.schemas.moderation import (
 )
 from app.schemas.user import UserRead
 from app.schemas.video import VideoRead
-from app.api.deps import get_current_user, get_current_moderator
+from app.api.deps import get_current_user, get_current_moderator, verify_video_access
 
 router = APIRouter(prefix="/moderation", tags=["Moderation"])
 
@@ -23,10 +23,15 @@ async def submit_report(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    video_res = await db.execute(select(Video).where(Video.id == report_in.video_id))
+    video_res = await db.execute(
+        select(Video).options(selectinload(Video.channel)).where(Video.id == report_in.video_id)
+    )
     video = video_res.scalar_one_or_none()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    # Strict access verification: cannot report private video without access
+    await verify_video_access(video, current_user, db)
 
     report = Report(
         video_id=report_in.video_id,

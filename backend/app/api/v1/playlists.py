@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -7,30 +7,52 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.models.user import User
 from app.models.channel import Channel
-from app.models.video import Video
+from app.models.video import Video, VideoVisibility
 from app.models.playlist import Playlist, PlaylistItem
 from app.schemas.playlist import (
     PlaylistCreate, PlaylistRead, PlaylistItemCreate, PlaylistItemRead
 )
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_user_optional, verify_video_access
 
 router = APIRouter(prefix="/playlists", tags=["Playlists"])
 
 @router.get("/channel/{channel_id}", response_model=List[PlaylistRead])
 async def list_channel_playlists(
     channel_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     stmt = (
         select(Playlist)
         .options(
-            selectinload(Playlist.items).selectinload(PlaylistItem.video)
+            selectinload(Playlist.channel),
+            selectinload(Playlist.items).selectinload(PlaylistItem.video).selectinload(Video.channel)
         )
         .where(Playlist.channel_id == channel_id)
         .order_by(desc(Playlist.created_at))
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    playlists = result.scalars().all()
+
+    response = []
+    for p in playlists:
+        is_owner = bool(current_user and p.channel and p.channel.user_id == current_user.id)
+        if p.visibility == VideoVisibility.PRIVATE and not is_owner:
+            continue
+        
+        accessible_items = []
+        for item in p.items:
+            if item.video:
+                try:
+                    await verify_video_access(item.video, current_user, db)
+                    accessible_items.append(item)
+                except HTTPException:
+                    pass
+            else:
+                accessible_items.append(item)
+        p.items = accessible_items
+        response.append(p)
+    return response
 
 @router.post("", response_model=PlaylistRead, status_code=status.HTTP_201_CREATED)
 async def create_playlist(
@@ -58,12 +80,14 @@ async def create_playlist(
 @router.get("/{playlist_id}", response_model=PlaylistRead)
 async def get_playlist(
     playlist_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     stmt = (
         select(Playlist)
         .options(
-            selectinload(Playlist.items).selectinload(PlaylistItem.video)
+            selectinload(Playlist.channel),
+            selectinload(Playlist.items).selectinload(PlaylistItem.video).selectinload(Video.channel)
         )
         .where(Playlist.id == playlist_id)
     )
@@ -71,6 +95,27 @@ async def get_playlist(
     playlist = result.scalar_one_or_none()
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Strict access verification for private playlist
+    if playlist.visibility == VideoVisibility.PRIVATE:
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Authentication required to view this private playlist")
+        if not (playlist.channel and playlist.channel.user_id == current_user.id):
+            raise HTTPException(status_code=403, detail="Access denied to this private playlist")
+
+    # Filter out items containing private/hidden videos where current_user lacks access
+    accessible_items = []
+    for item in playlist.items:
+        if item.video:
+            try:
+                await verify_video_access(item.video, current_user, db)
+                accessible_items.append(item)
+            except HTTPException:
+                pass
+        else:
+            accessible_items.append(item)
+    playlist.items = accessible_items
+
     return playlist
 
 @router.post("/{playlist_id}/items", response_model=PlaylistItemRead, status_code=status.HTTP_201_CREATED)
@@ -90,9 +135,15 @@ async def add_item_to_playlist(
     if playlist.channel.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to edit this playlist")
 
-    video_res = await db.execute(select(Video).where(Video.id == item_in.video_id))
-    if not video_res.scalar_one_or_none():
+    video_res = await db.execute(
+        select(Video).options(selectinload(Video.channel)).where(Video.id == item_in.video_id)
+    )
+    video = video_res.scalar_one_or_none()
+    if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    # Access verification: cannot add private video without access
+    await verify_video_access(video, current_user, db)
 
     item = PlaylistItem(
         playlist_id=playlist_id,
