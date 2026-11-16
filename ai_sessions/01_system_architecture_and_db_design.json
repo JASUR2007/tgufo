@@ -1,0 +1,15 @@
+{
+  "session_id": "session_arch_01",
+  "project": "youtube-clone-gufo",
+  "tool": "claude-code",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Привет! Нам нужно спроектировать полнофункциональный клон YouTube на FastAPI + PostgreSQL + MinIO + React. Изучи ТЗ: роли (user, moderator, admin), приватные видео (ACL), модерация (жалобы, скрытие), раздача видео со стримингом и перемоткой (Range HTTP 206), деплой одной командой на чистой Ubuntu. С чего начнем?"
+    },
+    {
+      "role": "assistant",
+      "content": "Привет! Отличная задача. Начнем с фундаментального проектирования:\n1. Доменная модель и схема PostgreSQL:\n- users, channels, videos, video_access_grants, comments, video_reactions, subscriptions, playlists, playlist_items, reports, moderation_actions.\n2. Жизненный цикл видео: Uploading -> Queued -> Processing (ffmpeg probe + thumbnail) -> Ready (или Failed). Модерация и видимость (public, unlisted, private) — ортогональные флаги.\n3. Стриминг: поддержка HTTP Range (RFC 7233) с 206 Partial Content, чтобы видеоплеер в браузере мог мгновенно перематывать в любую точку.\n4. Безопасность: строгий RBAC + ACL. Приватные видео доступны только владельцу, админу и пользователям из video_access_grants.\n5. Деплой: docker-compose с postgres, minio, backend, worker и nginx frontend, плюс deploy.sh."
+    }
+  ]
+}

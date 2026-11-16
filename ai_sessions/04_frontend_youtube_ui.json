@@ -1,0 +1,15 @@
+{
+  "session_id": "session_frontend_04",
+  "project": "youtube-clone-gufo",
+  "tool": "cursor",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Сделай фронтенд копию YouTube на React + Vite + Tailwind: темная тема, шапка с поиском, сайдбар с подписками и навигацией, сетка видео с длительностью и аватарками, страница просмотра с плеером, лайками, комментариями и боковой колонкой похожих видео, модалка загрузки с прогрессом и выбором приватности, панель быстрой смены демо-пользователя (Admin, Moderator, Creator, Viewer)."
+    },
+    {
+      "role": "assistant",
+      "content": "Фронтенд полностью реализован в frontend/src: компоненты Header, Sidebar, VideoPlayer, VideoCard, VideoComments, ReportModal, VideoUploadModal, QuickDemoBar. Маршруты: главная, просмотр, канал, поиск, плейлисты, модерация. Визуально в точности соответствует YouTube dark theme."
+    }
+  ]
+}
