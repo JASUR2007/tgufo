@@ -1,60 +1,31 @@
 import io
-import struct
+from pathlib import Path
 import pytest
 from httpx import AsyncClient
 from app.core.storage import storage_service
 from app.services.video_processing import video_processing_service
 from app.models.video import VideoVisibility, VideoProcessingStatus
 
-def generate_valid_minimal_mp4() -> bytes:
-    """
-    Constructs a structurally valid ISO BMFF MP4 container
-    with proper ftyp, moov, mvhd, trak, and mdat boxes.
-    """
-    def make_box(box_type: bytes, payload: bytes) -> bytes:
-        length = len(payload) + 8
-        return struct.pack(">I", length) + box_type + payload
-
-    # 1. ftyp box
-    ftyp_payload = b"isom" + struct.pack(">I", 512) + b"isomiso2avc1mp41"
-    ftyp = make_box(b"ftyp", ftyp_payload)
-
-    # 2. mdat box (contains sample video data)
-    sample_video_payload = b"\x00\x00\x00\x02\x09\x10" + (b"\x12\x34\x56\x78" * 500)
-    mdat = make_box(b"mdat", sample_video_payload)
-
-    # 3. moov -> mvhd (movie header)
-    # mvhd: version 0 (4 bytes), creation (4), modification (4), timescale=1000 (4), duration=3000 (4), rate=0x10000 (4), vol=0x100 (2), reserved (10), matrix (36), pre-defined (24), next_track_id=2 (4)
-    mvhd_payload = (
-        b"\x00\x00\x00\x00" +  # version & flags
-        b"\x00\x00\x00\x00" +  # creation
-        b"\x00\x00\x00\x00" +  # modification
-        struct.pack(">I", 1000) +  # timescale
-        struct.pack(">I", 3000) +  # duration (3 seconds)
-        b"\x00\x01\x00\x00" +  # preferred rate 1.0
-        b"\x01\x00" +          # preferred volume 1.0
-        (b"\x00" * 10) +       # reserved
-        (b"\x00" * 36) +       # matrix
-        (b"\x00" * 24) +       # pre-defined
-        struct.pack(">I", 2)   # next track id
-    )
-    mvhd = make_box(b"mvhd", mvhd_payload)
-    moov = make_box(b"moov", mvhd)
-
-    return ftyp + moov + mdat
+FIXTURE_MP4_PATH = Path(__file__).parent / "fixtures" / "sample_real_video.mp4"
 
 @pytest.mark.asyncio
 async def test_full_real_mp4_lifecycle(client: AsyncClient):
     """
-    Full end-to-end integration test verifying:
-    1. User registration & channel creation
-    2. Real MP4 video upload
-    3. Background processing & thumbnail generation in S3/storage
-    4. HTTP 206 Partial Content range playback & seeking
-    5. Scoped media ticket generation
-    6. Strict Private ACL (owner/grantee allowed; stranger/moderator/admin forbidden without grant)
-    7. Reaction (like) & comment submission on the video
+    Full end-to-end integration test verifying with a real H.264/AAC MP4 video:
+    1. User registration & channel auto-creation
+    2. Upload of genuine H.264/AAC MP4 encoded video (libx264/aac, 320x240, faststart)
+    3. Duration calculation via video processing service & thumbnail generation
+    4. HTTP 206 Partial Content range playback & timeline scrubbing
+    5. Scoped media ticket generation & read-only enforcement
+    6. Negative security check: media ticket rejected as general account Bearer token
+    7. Strict Private ACL (owner/grantee allowed; stranger/moderator/admin forbidden without grant)
+    8. Reaction (like) & comment submission on the video
     """
+    assert FIXTURE_MP4_PATH.exists(), f"Real MP4 test fixture missing at {FIXTURE_MP4_PATH}"
+    mp4_bytes = FIXTURE_MP4_PATH.read_bytes()
+    assert len(mp4_bytes) > 10000
+    assert mp4_bytes[4:8] == b"ftyp"
+
     # Step 1: Register Author (channel is automatically created on registration)
     reg_author = await client.post("/api/v1/auth/register", json={
         "email": "real_author@example.com",
@@ -66,20 +37,16 @@ async def test_full_real_mp4_lifecycle(client: AsyncClient):
     author_token = reg_author.json()["access_token"]
     author_headers = {"Authorization": f"Bearer {author_token}"}
 
-    # Step 2: Upload genuine MP4 video
-    mp4_bytes = generate_valid_minimal_mp4()
-    assert len(mp4_bytes) > 1000
-    assert mp4_bytes[4:8] == b"ftyp"
-
+    # Step 2: Upload genuine H.264/AAC MP4 video
     upload_res = await client.post(
         "/api/v1/videos/upload",
         data={
             "title": "Real End-to-End MP4 Lifecycle Test",
-            "description": "Uploaded real MP4 binary to verify playback and range streaming",
+            "description": "Uploaded genuine H.264/AAC MP4 video to verify playback and range streaming",
             "visibility": "public"
         },
         files={
-            "video_file": ("sample_test_video.mp4", io.BytesIO(mp4_bytes), "video/mp4")
+            "video_file": ("real_h264_test.mp4", io.BytesIO(mp4_bytes), "video/mp4")
         },
         headers=author_headers
     )
@@ -87,36 +54,42 @@ async def test_full_real_mp4_lifecycle(client: AsyncClient):
     video_data = upload_res.json()
     video_id = video_data["id"]
 
-    # Step 4: Ensure video and thumbnail are processed
+    # Step 3: Verify video duration & thumbnail processing
     created_mp4 = next(p for p in storage_service.videos_dir.glob("*.mp4") if p.stat().st_size == len(mp4_bytes))
     assert created_mp4.exists()
+
+    # Verify duration calculation on the real MP4 file
+    duration = await video_processing_service.get_video_duration(created_mp4)
+    assert duration > 0.0
 
     # Generate thumbnail
     thumb_name = f"thumb_{video_id}_real.jpg"
     await video_processing_service.generate_thumbnail(created_mp4, thumb_name, title="Real MP4 Test")
     assert (storage_service.thumbnails_dir / thumb_name).exists()
 
-    # Step 5: Test Range Streaming (HTTP 206 Partial Content)
-    # Request first 500 bytes
+    # Step 4: Test Range Streaming with Real MP4 (HTTP 206 Partial Content)
+    # Request first 1000 bytes
     range_res = await client.get(
         f"/api/v1/videos/{video_id}/stream",
-        headers={"Range": "bytes=0-499"}
+        headers={"Range": "bytes=0-999"}
     )
     assert range_res.status_code == 206
     assert range_res.headers.get("Accept-Ranges") == "bytes"
-    assert range_res.headers.get("Content-Range").startswith("bytes 0-499/")
-    assert len(range_res.content) == 500
+    assert range_res.headers.get("Content-Range").startswith("bytes 0-999/")
+    assert len(range_res.content) == 1000
+    # Confirms real MP4 ftyp container header delivered
+    assert range_res.content[4:8] == b"ftyp"
 
     # Request second chunk (simulate timeline scrubbing / seeking)
     range_res_seek = await client.get(
         f"/api/v1/videos/{video_id}/stream",
-        headers={"Range": "bytes=500-999"}
+        headers={"Range": "bytes=1000-1999"}
     )
     assert range_res_seek.status_code == 206
-    assert range_res_seek.headers.get("Content-Range").startswith("bytes 500-999/")
-    assert len(range_res_seek.content) == 500
+    assert range_res_seek.headers.get("Content-Range").startswith("bytes 1000-1999/")
+    assert len(range_res_seek.content) == 1000
 
-    # Step 6: Test Scoped Media Ticket
+    # Step 5: Test Scoped Media Ticket
     ticket_res = await client.post(
         f"/api/v1/videos/{video_id}/ticket",
         headers=author_headers
@@ -130,6 +103,22 @@ async def test_full_real_mp4_lifecycle(client: AsyncClient):
         headers={"Range": "bytes=0-100"}
     )
     assert stream_with_ticket.status_code == 206
+
+    # Step 6: Negative Security Check: Ticket CANNOT act as general Bearer access token
+    # 6.1 Call /auth/me with Authorization: Bearer <ticket> -> MUST fail with 401
+    bad_me_res = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {ticket}"}
+    )
+    assert bad_me_res.status_code == 401
+
+    # 6.2 Call upload with Authorization: Bearer <ticket> -> MUST fail with 401
+    bad_up_res = await client.post(
+        "/api/v1/videos/upload",
+        headers={"Authorization": f"Bearer {ticket}"},
+        data={"title": "Hacker Video"}
+    )
+    assert bad_up_res.status_code == 401
 
     # Step 7: Strict Private Access Control Flow
     # 7.1 Author changes video to private

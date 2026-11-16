@@ -16,40 +16,48 @@ async def get_current_user_optional(
     db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """
-    Extracts authenticated user from either:
-    1. HTTP Authorization Bearer header
-    2. Short-lived media ticket via ?ticket=... (scoped to video_id, secure for HTML5 media tags)
-    3. Query parameter ?token=... (backward compatibility)
+    Extracts authenticated user from HTTP Authorization Bearer header
+    (or legacy query ?token= for backward compatibility).
+    NOTE: Media tickets are NEVER accepted as general access tokens!
     """
-    # 1. Check Bearer token from header
-    if token:
-        payload = decode_access_token(token)
-        if payload and payload.get("sub"):
-            user_id = payload.get("sub")
-            result = await db.execute(select(User).where(User.id == user_id, User.is_active == True))
-            return result.scalar_one_or_none()
+    effective_token = token
+    if not effective_token:
+        effective_token = request.query_params.get("token")
 
-    # 2. Check scoped media ticket
+    if not effective_token:
+        return None
+
+    payload = decode_access_token(effective_token)
+    if not payload or not payload.get("sub"):
+        return None
+
+    user_id = payload.get("sub")
+    result = await db.execute(select(User).where(User.id == user_id, User.is_active == True))
+    return result.scalar_one_or_none()
+
+async def get_media_user_optional(
+    video_id: str,
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db)
+) -> Optional[User]:
+    """
+    Specifically for read-only video stream and thumbnail delivery.
+    Accepts:
+    1. Short-lived media ticket via ?ticket=... strictly validated for this specific video_id.
+    2. HTTP Authorization Bearer header.
+    3. Query parameter ?token=... (backward compatibility).
+    """
+    # 1. Check scoped media ticket
     ticket = request.query_params.get("ticket")
     if ticket:
-        video_id = request.path_params.get("video_id")
-        if not video_id:
-            parts = request.url.path.strip("/").split("/")
-            if "videos" in parts:
-                idx = parts.index("videos")
-                if idx + 1 < len(parts):
-                    video_id = parts[idx + 1]
-        if video_id:
-            try:
-                ticket_user_id = verify_media_ticket(ticket, str(video_id))
-                if ticket_user_id:
-                    result = await db.execute(select(User).where(User.id == ticket_user_id, User.is_active == True))
-                    return result.scalar_one_or_none()
-            except Exception:
-                pass
+        ticket_user_id = verify_media_ticket(ticket, str(video_id))
+        if ticket_user_id:
+            result = await db.execute(select(User).where(User.id == ticket_user_id, User.is_active == True))
+            return result.scalar_one_or_none()
 
-    # 3. Query parameter token (backward compatibility)
-    effective_token = request.query_params.get("token")
+    # 2. Check Bearer token from header or query param
+    effective_token = token or request.query_params.get("token")
     if effective_token:
         payload = decode_access_token(effective_token)
         if payload and payload.get("sub"):

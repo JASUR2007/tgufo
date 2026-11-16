@@ -23,7 +23,7 @@ from app.schemas.video import (
 )
 from app.schemas.channel import ChannelRead
 from app.schemas.user import UserRead
-from app.api.deps import get_current_user, get_current_user_optional, verify_video_access
+from app.api.deps import get_current_user, get_current_user_optional, get_media_user_optional, verify_video_access
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
 
@@ -340,7 +340,7 @@ async def stream_video(
     video_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional)
+    current_user: Optional[User] = Depends(get_media_user_optional)
 ):
     result = await db.execute(
         select(Video).options(selectinload(Video.channel)).where(Video.id == video_id)
@@ -370,7 +370,7 @@ async def stream_video(
 async def get_thumbnail(
     video_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional)
+    current_user: Optional[User] = Depends(get_media_user_optional)
 ):
     result = await db.execute(
         select(Video).options(selectinload(Video.channel)).where(Video.id == video_id)

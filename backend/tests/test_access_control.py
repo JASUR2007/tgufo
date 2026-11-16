@@ -107,6 +107,36 @@ async def test_private_video_access_control(client: AsyncClient, test_users: dic
     )
     assert res_stream_anon.status_code == 401
 
+    # 8. NEGATIVE SECURITY AUDIT: Media Ticket CANNOT be used as general account Bearer token
+    # 8.1 Ticket passed as Authorization: Bearer <ticket> to /auth/me -> MUST be 401 Unauthorized
+    res_ticket_me = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {viewer_ticket}"}
+    )
+    assert res_ticket_me.status_code == 401
+
+    # 8.2 Ticket passed as Bearer to upload -> MUST be 401 Unauthorized
+    res_ticket_upload = await client.post(
+        "/api/v1/videos/upload",
+        headers={"Authorization": f"Bearer {viewer_ticket}"},
+        data={"title": "Unauthorized"}
+    )
+    assert res_ticket_upload.status_code == 401
+
+    # 8.3 Ticket passed as Bearer to video update (PATCH) -> MUST be 401 Unauthorized
+    res_ticket_patch = await client.patch(
+        f"/api/v1/videos/{video.id}",
+        headers={"Authorization": f"Bearer {viewer_ticket}"},
+        json={"title": "Hacked Title"}
+    )
+    assert res_ticket_patch.status_code == 401
+
+    # 8.4 Ticket for video A used on other video B -> MUST be rejected (cross-video isolation)
+    other_video = test_users["public_video"]
+    from app.core.security import verify_media_ticket, decode_access_token
+    assert verify_media_ticket(viewer_ticket, other_video.id) is None
+    assert decode_access_token(viewer_ticket) is None
+
 @pytest.mark.asyncio
 async def test_thumbnail_acl_protection(client: AsyncClient, test_users: dict):
     video = test_users["private_video"]
